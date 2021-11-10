@@ -1,0 +1,137 @@
+#use-added-syntax(jitx)
+defpackage parametric-modules :
+  import core
+  import collections
+  import math
+  import jitx
+  import jitx/commands
+
+  import ocdb/symbols
+  import ocdb/box-symbol
+  import ocdb/land-patterns
+  import ocdb/defaults
+  import ocdb/generic-components
+
+pcb-pad round-pth-pad :
+  type = TH
+  shape = Circle(0.8)
+  layer(Cutout()) = Circle(0.5)
+  layer(SolderMask(Top)) = Circle(0.8)
+  layer(SolderMask(Bottom)) = Circle(0.8)
+
+pcb-landpattern pin-header-landpattern :
+  pad p[1] : round-pth-pad at loc(-2.54, 0.0)
+  pad p[2] : round-pth-pad at loc(0.0, 0.0)
+  pad p[3] : round-pth-pad at loc(2.54, 0.0)
+  layer(Courtyard(Top)) = Rectangle(6.6, 1.6)
+  layer(Silkscreen("values", Top)) = Text(">REF", 0.7, C, loc(0.0, -1.2))
+
+pcb-symbol pin-header-symbol :
+  layer("foreground") = Rectangle(2.54, 7.62, loc(-1.27, 0.0))
+  for i in 0 to 3 do :
+    pin p[(i + 1)] at Point(-2.54, (2.54 - (to-double(i) * 2.54))) with :
+      direction = Left
+      length = 2.54
+      number-size = 0.762
+      name-size = 0.762
+  preferred-orientation = PreferRotation([0])
+  layer("reference")  = Text(">REF", 0.7056, W, loc(-2.54, 4.2))
+
+pcb-component three-pin-header :
+  port p : pin[[1 2 3]]
+  landpattern = pin-header-landpattern(p[1] => pin-header-landpattern.p[1]
+                                       p[2] => pin-header-landpattern.p[2]
+                                       p[3] => pin-header-landpattern.p[3])
+  symbol =           pin-header-symbol(p[1] => pin-header-symbol.p[1]
+                                       p[2] => pin-header-symbol.p[2]
+                                       p[3] => pin-header-symbol.p[3])
+  reference-prefix = "J"
+
+pcb-pad rect-smd-pad :
+  type = SMD
+  val pad-shape = Rectangle(0.75, 1.0)
+  shape = pad-shape
+  layer(SolderMask(Top)) = pad-shape
+  layer(Paste(Top)) = pad-shape
+
+pcb-landpattern polarized-chip-landpattern :
+  pad a : rect-smd-pad at loc(1.0, 0.0)
+  pad c : rect-smd-pad at loc(-1.0, 0.0)
+  layer(Courtyard(Top)) = Rectangle(3.0, 2.0)
+  layer(Silkscreen("pol", Top)) = Line(0.30, [Point((- 1.5), (- 1.0)) Point((- 1.5), 1.0)])
+  layer(Silkscreen("values", Top)) = Text(">REF", 0.7, C, loc(0.0, -1.2))
+
+pcb-component photodiode :
+  pin a 
+  pin c
+  landpattern = polarized-chip-landpattern(a => polarized-chip-landpattern.a, 
+                                           c => polarized-chip-landpattern.c)
+  val sym = diode-sym(DiodePhoto)
+  symbol =                             sym(a => sym.a, 
+                                           c => sym.c)                                           
+  reference-prefix = "D"
+
+pcb-component op-amp :
+  pin-properties :
+    [pin:Ref | pads:Int ...]
+    [in+     | 3 ]
+    [in-     | 4 ]
+    [out     | 1 ]
+    [v+      | 5 ]
+    [v-      | 2 ]
+  assign-landpattern(SOT95P280X145-5N)
+  symbol = op-amp-sym(self.in+ => op-amp-sym.in+
+                      self.in- => op-amp-sym.in-
+                      self.out => op-amp-sym.out
+                      self.v-  => op-amp-sym.v-
+                      self.v+  => op-amp-sym.v+)
+
+pcb-module transimpedance-amplifier (rf:Double, cf:Double):
+  pin input
+  pin output
+  pin vdd
+  pin gnd
+
+  inst op-amp:op-amp
+  inst decoupling-cap : ceramic-cap(10.0e-6)
+
+  net (vdd op-amp.v+ decoupling-cap.p[1])
+  net (vdd op-amp.v- decoupling-cap.p[2])
+
+  inst r : chip-resistor(closest-std-val(rf,1.0))
+  inst c : ceramic-cap(cf)
+
+  net (gnd op-amp.in+)
+  net (input, op-amp.in-, r.p[1] c.p[1])
+  net (output op-amp.out, r.p[2] c.p[2])
+
+  schematic-group(self) = trans-amp
+
+pcb-module my-design :
+  inst d : photodiode[2]
+  inst high-gain-amp : transimpedance-amplifier(54.0e3, 2.7e-12)
+  inst low-gain-amp : transimpedance-amplifier(27.0e3, 2.7e-12)
+  inst connector : three-pin-header
+
+  ; Set up power connections
+  net GND (high-gain-amp.gnd low-gain-amp.gnd connector.p[1])
+  net VDD (high-gain-amp.vdd low-gain-amp.vdd connector.p[2])
+
+  ; diodes to amplifiers
+  net (d[0].c high-gain-amp.input)
+  net (d[0].a high-gain-amp.gnd)
+  net (d[1].c low-gain-amp.input)
+  net (d[1].a low-gain-amp.gnd)
+
+  schematic-group(d[0]) = schematic-group(high-gain-amp)
+  schematic-group(d[1]) = schematic-group(low-gain-amp)
+
+  symbol(GND) = ocdb/symbols/ground-sym
+  symbol(VDD) = ocdb/symbols/supply-sym
+
+
+make-default-board(my-design, 4, Rectangle(25.0, 25.0))
+view-board()
+view-schematic()
+
+export-cad()
